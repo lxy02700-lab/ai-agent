@@ -1,211 +1,250 @@
 #!/usr/bin/env python3
 """
-智能体（AI Agent）完整示例
-支持：
-- 接入真实大模型（Grok / OpenAI 兼容接口）
-- 工具调用（时间、计算、网络搜索）
+智能体（AI Agent）完善版
+功能：
+- 真实大模型（Grok / OpenAI 兼容）
+- 官方 Function Calling 工具调用
 - 对话记忆
-- 命令行 + Web 界面
+- 命令行 + Gradio Web 界面
 """
 
 import os
+import json
 import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-# 尝试加载 .env
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
 
-# ========== 配置 ==========
-# 优先使用 Grok（xAI），也兼容 OpenAI
-API_BASE = os.getenv("API_BASE", "https://api.x.ai/v1")  # Grok 默认
+# ==================== 配置 ====================
+API_BASE = os.getenv("API_BASE", "https://api.x.ai/v1")
 API_KEY = os.getenv("API_KEY") or os.getenv("XAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-MODEL = os.getenv("MODEL", "grok-3")  # 可改为 gpt-4o 等
+MODEL = os.getenv("MODEL", "grok-3")
 
 
-# ========== 工具定义 ==========
+# ==================== 工具实现 ====================
 def get_current_time() -> str:
     """获取当前日期和时间"""
     now = datetime.now()
-    return now.strftime("%Y年%m月%d日 %H:%M:%S 星期") + "一二三四五六日"[now.weekday()]
+    weekdays = "一二三四五六日"
+    return now.strftime(f"%Y年%m月%d日 %H:%M:%S 星期{weekdays[now.weekday()]}")
 
 
 def calculate(expression: str) -> str:
-    """安全计算数学表达式，例如 12 * (3 + 4)"""
+    """安全计算数学表达式"""
     try:
-        # 只允许安全字符
-        if not re.match(r"^[\d\s\+\-\*\/\(\)\.\^\%]+$", expression):
-            return "错误：表达式包含非法字符"
-        # 简单替换 ^ 为 **
-        expression = expression.replace("^", "**")
-        result = eval(expression, {"__builtins__": {}}, {})
+        if not re.match(r"^[\d\s\+\-\*\/\(\)\.\^\%]+$", expression.strip()):
+            return "错误：表达式包含非法字符，只支持数字和 + - * / ( ) . ^ %"
+        expr = expression.replace("^", "**")
+        result = eval(expr, {"__builtins__": {}}, {})
         return str(result)
     except Exception as e:
-        return f"计算错误：{e}"
+        return f"计算失败：{e}"
 
 
 def web_search(query: str) -> str:
-    """简单网络搜索（占位实现，实际可接入搜索 API）"""
-    # 这里用模拟结果，真实环境可接入 SerpAPI / Bing / Google 等
+    """网络搜索（演示版，可后续接入真实搜索 API）"""
     return (
-        f"【搜索结果（模拟）】关于「{query}」：\n"
-        "1. 相关信息请参考权威来源。\n"
-        "2. 如需真实搜索，请配置搜索 API Key。\n"
-        "（当前为演示模式）"
+        f"【搜索「{query}」的结果（演示）】\n"
+        "目前为演示模式。要获得真实搜索结果，可接入 SerpAPI / Bing Search / Tavily 等服务。\n"
+        "建议下一步：在 .env 中配置 SEARCH_API_KEY 并扩展此函数。"
     )
 
 
-# 工具注册表
-TOOLS = {
-    "get_current_time": {
-        "name": "get_current_time",
-        "description": "获取当前的日期和时间",
-        "parameters": {},
-        "function": get_current_time,
-    },
-    "calculate": {
-        "name": "calculate",
-        "description": "计算数学表达式，例如 12*(3+4) 或 2^10",
-        "parameters": {
-            "expression": {
-                "type": "string",
-                "description": "要计算的数学表达式"
+# OpenAI 格式的 tools 定义（官方 Function Calling）
+TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "获取当前的日期和时间，当用户询问现在几点、今天几号、星期几时调用",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
             }
-        },
-        "function": calculate,
+        }
     },
-    "web_search": {
-        "name": "web_search",
-        "description": "搜索互联网上的信息",
-        "parameters": {
-            "query": {
-                "type": "string",
-                "description": "搜索关键词"
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate",
+            "description": "计算数学表达式，例如 12*(3+4)、2^10、100/4 等",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "要计算的数学表达式，例如 12*(3+4)"
+                    }
+                },
+                "required": ["expression"]
             }
-        },
-        "function": web_search,
+        }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "搜索互联网上的最新信息或知识",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词或问题"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    }
+]
+
+TOOL_FUNCTIONS = {
+    "get_current_time": lambda **kwargs: get_current_time(),
+    "calculate": lambda expression, **kwargs: calculate(expression),
+    "web_search": lambda query, **kwargs: web_search(query),
 }
 
 
-# ========== 智能体核心 ==========
+# ==================== 智能体核心 ====================
 class SmartAgent:
     def __init__(self, name: str = "智能体"):
         self.name = name
-        self.memory: List[Dict[str, str]] = []
+        self.memory: List[Dict[str, Any]] = []
         self.system_prompt = (
-            "你是一个有用的中文智能助手。你可以调用工具来帮助用户。\n"
-            "可用工具：\n"
-            "- get_current_time：获取当前时间\n"
-            "- calculate：计算数学表达式（参数 expression）\n"
-            "- web_search：搜索信息（参数 query）\n\n"
-            "如果需要使用工具，请按以下格式回复：\n"
-            "TOOL_CALL: 工具名 | 参数名=参数值\n"
-            "例如：TOOL_CALL: calculate | expression=12*5\n"
-            "如果不需要工具，直接用自然语言回答用户。"
+            "你是一个友好、专业、乐于助人的中文智能助手。\n"
+            "你可以使用工具来获取实时信息或进行计算。\n"
+            "回答时请用清晰、自然的中文，必要时分点说明。\n"
+            "如果工具返回的结果是演示/模拟数据，请如实告知用户。"
         )
 
-    def _call_llm(self, messages: List[Dict[str, str]]) -> str:
-        """调用大模型 API（OpenAI 兼容格式）"""
+    def _get_client(self):
         if not API_KEY:
-            return (
-                "【提示】未配置 API_KEY。\n"
-                "请在 .env 文件中设置：\n"
-                "API_KEY=你的密钥\n"
-                "API_BASE=https://api.x.ai/v1   # Grok\n"
-                "MODEL=grok-3\n\n"
-                "或者设置 OPENAI_API_KEY / XAI_API_KEY。"
-            )
-
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=API_KEY, base_url=API_BASE)
-
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=messages,
-                temperature=0.7,
-            )
-            return response.choices[0].message.content or ""
-        except Exception as e:
-            return f"调用大模型失败：{e}"
-
-    def _parse_tool_call(self, text: str) -> Optional[Dict[str, Any]]:
-        """解析工具调用格式：TOOL_CALL: 工具名 | 参数=值"""
-        match = re.search(r"TOOL_CALL:\s*(\w+)\s*(?:\|\s*(.+))?", text, re.IGNORECASE)
-        if not match:
             return None
+        from openai import OpenAI
+        return OpenAI(api_key=API_KEY, base_url=API_BASE)
 
-        tool_name = match.group(1).strip()
-        params_str = match.group(2) or ""
+    def _call_llm(self, messages: List[Dict], use_tools: bool = True) -> Any:
+        """调用大模型，返回完整 response 对象或错误字符串"""
+        client = self._get_client()
+        if client is None:
+            return (
+                "【配置提示】尚未设置 API_KEY。\n\n"
+                "请按以下步骤配置：\n"
+                "1. 复制 .env.example 为 .env\n"
+                "2. 填入你的 API_KEY\n"
+                "3. 推荐配置（Grok）：\n"
+                "   API_KEY=你的密钥\n"
+                "   API_BASE=https://api.x.ai/v1\n"
+                "   MODEL=grok-3\n\n"
+                "配置完成后重新运行即可。"
+            )
 
-        params = {}
-        if params_str:
-            for part in params_str.split(","):
-                if "=" in part:
-                    k, v = part.split("=", 1)
-                    params[k.strip()] = v.strip()
-
-        return {"name": tool_name, "params": params}
-
-    def _execute_tool(self, tool_name: str, params: Dict[str, str]) -> str:
-        """执行工具"""
-        tool = TOOLS.get(tool_name)
-        if not tool:
-            return f"未知工具：{tool_name}"
-
-        func = tool["function"]
         try:
-            if tool_name == "get_current_time":
-                return func()
-            elif tool_name == "calculate":
-                return func(params.get("expression", ""))
-            elif tool_name == "web_search":
-                return func(params.get("query", ""))
-            else:
-                return func(**params)
+            kwargs = {
+                "model": MODEL,
+                "messages": messages,
+                "temperature": 0.7,
+            }
+            if use_tools:
+                kwargs["tools"] = TOOLS_SCHEMA
+                kwargs["tool_choice"] = "auto"
+
+            return client.chat.completions.create(**kwargs)
         except Exception as e:
-            return f"工具执行错误：{e}"
+            return f"调用大模型失败：{type(e).__name__}: {e}"
 
     def chat(self, user_input: str) -> str:
-        """核心对话方法（带记忆 + 工具）"""
-        # 构建消息
-        messages = [{"role": "system", "content": self.system_prompt}]
+        """核心对话：支持多轮工具调用 + 记忆"""
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": self.system_prompt}
+        ]
 
-        # 加入最近记忆（最多保留 10 轮）
-        for mem in self.memory[-10:]:
+        # 加入历史记忆（最近 8 轮）
+        for mem in self.memory[-8:]:
             messages.append({"role": "user", "content": mem["input"]})
             messages.append({"role": "assistant", "content": mem["response"]})
 
         messages.append({"role": "user", "content": user_input})
 
         # 第一次调用
-        reply = self._call_llm(messages)
+        response = self._call_llm(messages)
+        if isinstance(response, str):
+            self.memory.append({"input": user_input, "response": response})
+            return response
 
-        # 检查是否需要调用工具
-        tool_call = self._parse_tool_call(reply)
-        if tool_call:
-            tool_result = self._execute_tool(tool_call["name"], tool_call["params"])
-            # 把工具结果再喂给模型，生成最终回答
-            messages.append({"role": "assistant", "content": reply})
+        message = response.choices[0].message
+        final = message.content or ""
+
+        # 处理工具调用（可能多轮）
+        max_tool_rounds = 3
+        for _ in range(max_tool_rounds):
+            if not getattr(message, "tool_calls", None):
+                break
+
+            # 把 assistant 的 tool_calls 消息加入
             messages.append({
-                "role": "user",
-                "content": f"工具 {tool_call['name']} 的执行结果：{tool_result}\n请根据这个结果用自然语言回答用户。"
+                "role": "assistant",
+                "content": message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    }
+                    for tc in message.tool_calls
+                ]
             })
-            reply = self._call_llm(messages)
 
-        # 保存记忆
-        self.memory.append({"input": user_input, "response": reply})
-        return reply
+            # 执行每个工具
+            for tc in message.tool_calls:
+                name = tc.function.name
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+
+                func = TOOL_FUNCTIONS.get(name)
+                if func:
+                    result = func(**args)
+                else:
+                    result = f"未知工具：{name}"
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": str(result)
+                })
+
+            # 再次调用模型，让它根据工具结果生成最终回答
+            response = self._call_llm(messages, use_tools=True)
+            if isinstance(response, str):
+                final = response
+                break
+            message = response.choices[0].message
+            final = message.content or final
+
+        if not final:
+            final = "抱歉，我暂时无法回答。"
+
+        self.memory.append({"input": user_input, "response": final})
+        return final
+
+    def clear_memory(self):
+        self.memory.clear()
 
     def run_cli(self):
-        """命令行模式"""
         print(f"=== {self.name} 已启动（命令行模式）===")
-        print("输入内容开始对话，输入「退出」结束。\n")
+        print("输入内容开始对话，输入「退出」结束，输入「清空」清除记忆。\n")
 
         while True:
             try:
@@ -219,49 +258,82 @@ class SmartAgent:
             if user_input.lower() in ["退出", "exit", "quit", "q"]:
                 print(f"{self.name}：再见！")
                 break
+            if user_input in ["清空", "清除记忆", "clear"]:
+                self.clear_memory()
+                print(f"{self.name}：已清空对话记忆。\n")
+                continue
 
             reply = self.chat(user_input)
             print(f"{self.name}：{reply}\n")
 
 
-# ========== Web 界面（Gradio）==========
-def create_web_ui():
+# ==================== Gradio Web 界面 ====================
+def create_web_ui(share: bool = False):
     try:
         import gradio as gr
     except ImportError:
-        print("请先安装 gradio：pip install gradio")
+        print("请先安装：pip install gradio")
         return
 
     agent = SmartAgent("智能体")
 
-    def respond(message, history):
-        if not message.strip():
+    def respond(message: str, history: list):
+        if not message or not message.strip():
             return history, ""
-        reply = agent.chat(message)
-        history = history + [(message, reply)]
+        reply = agent.chat(message.strip())
+        history = history + [{"role": "user", "content": message}, {"role": "assistant", "content": reply}]
         return history, ""
 
-    with gr.Blocks(title="智能体 Web 界面", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# 🤖 智能体 Web 聊天")
-        gr.Markdown("支持真实大模型 + 工具调用 + 对话记忆")
+    def clear_chat():
+        agent.clear_memory()
+        return [], ""
 
-        chatbot = gr.Chatbot(height=500, label="对话")
-        msg = gr.Textbox(placeholder="输入你的问题...", label="消息", lines=2)
-        clear = gr.Button("清空对话")
+    with gr.Blocks(
+        title="智能体",
+        theme=gr.themes.Soft(primary_hue="blue"),
+        css=".gradio-container {max-width: 900px !important;}"
+    ) as demo:
+        gr.Markdown("# 🤖 智能体")
+        gr.Markdown("支持真实大模型 · 工具调用（时间 / 计算 / 搜索）· 对话记忆")
+
+        chatbot = gr.Chatbot(
+            height=480,
+            label="对话",
+            show_copy_button=True,
+            type="messages"
+        )
+        with gr.Row():
+            msg = gr.Textbox(
+                placeholder="输入你的问题，例如：现在几点了？帮我算 15*8+3",
+                label="消息",
+                lines=2,
+                scale=5
+            )
+            submit_btn = gr.Button("发送", variant="primary", scale=1)
+
+        with gr.Row():
+            clear_btn = gr.Button("清空对话")
+            gr.Markdown(
+                "<small>提示：未配置 API_KEY 时会显示配置说明。"
+                "运行 `python agent.py web --share` 可生成公网临时链接。</small>"
+            )
 
         msg.submit(respond, [msg, chatbot], [chatbot, msg])
-        clear.click(lambda: ([], ""), None, [chatbot, msg], queue=False)
+        submit_btn.click(respond, [msg, chatbot], [chatbot, msg])
+        clear_btn.click(clear_chat, None, [chatbot, msg])
 
-    demo.launch(share=False, server_name="0.0.0.0")
+    print("正在启动 Web 界面...")
+    demo.launch(share=share, server_name="0.0.0.0", show_error=True)
 
 
-# ========== 入口 ==========
+# ==================== 入口 ====================
 if __name__ == "__main__":
     import sys
+    args = sys.argv[1:]
 
-    if len(sys.argv) > 1 and sys.argv[1] == "web":
-        print("启动 Web 界面...")
-        create_web_ui()
+    if "web" in args:
+        share = "--share" in args
+        create_web_ui(share=share)
     else:
         agent = SmartAgent("智能体")
         agent.run_cli()
